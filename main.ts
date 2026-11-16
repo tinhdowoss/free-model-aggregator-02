@@ -228,6 +228,53 @@ function textOfStream(raw: string): string {
   return out.join('');
 }
 
+/**
+ * Collapse an upstream SSE stream to a single finish chunk. OpenRouter sends
+ * a stop chunk and then a second stop chunk carrying the usage
+ * (stream_options.include_usage); relaying both makes the client see two
+ * finish chunks and fail the stream-order check. Only finish_reason /
+ * native_finish_reason are nulled, on every finish chunk except the last
+ * (which keeps the usage); the content is untouched. A pure function of the
+ * upstream bytes, so replay stays identical.
+ */
+function singleFinishStream(raw: string): string {
+  const frames = raw.split('\n\n');
+  const finishAt: number[] = [];
+  const parsed: (Json | null)[] = [];
+  for (let i = 0; i < frames.length; i += 1) {
+    const m = frames[i].match(/^data:\s*(\{.*\})\s*$/s);
+    if (m === null) {
+      parsed.push(null);
+      continue;
+    }
+    let value: unknown;
+    try {
+      value = JSON.parse(m[1]);
+    } catch {
+      parsed.push(null);
+      continue;
+    }
+    const obj = isRecord(value) ? value : null;
+    parsed.push(obj);
+    if (obj === null || !Array.isArray(obj.choices)) continue;
+    const first = isRecord(obj.choices[0]) ? obj.choices[0] : null;
+    if (first !== null && typeof first.finish_reason === 'string' && first.finish_reason !== '') finishAt.push(i);
+  }
+  if (finishAt.length <= 1) return raw;
+  const out = frames.slice();
+  for (let k = 0; k < finishAt.length - 1; k += 1) {
+    const i = finishAt[k];
+    const obj = parsed[i];
+    if (obj === null || !Array.isArray(obj.choices)) continue;
+    const first = isRecord(obj.choices[0]) ? obj.choices[0] : null;
+    if (first === null) continue;
+    first.finish_reason = null;
+    if ('native_finish_reason' in first) first.native_finish_reason = null;
+    out[i] = `data: ${JSON.stringify(obj)}`;
+  }
+  return out.join('\n\n');
+}
+
 /** A ReadableStream that replays `raw` bytes once, for the wire relays. */
 function streamOf(raw: string): ReadableStream<Uint8Array> {
   const bytes = new TextEncoder().encode(raw);
