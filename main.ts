@@ -340,7 +340,7 @@ async function servePrompt(req: Requirement, body: Json, wire: 'openai' | 'anthr
       continue;
     }
     if (isStream) {
-      const raw = await upstream.text();
+      const raw = singleFinishStream(await upstream.text());
       const answerText = textOfStream(raw);
       if (token !== null && !answerText.includes(token)) {
         log(`token ${token} missing from ${pick.id} stream; falling over`);
